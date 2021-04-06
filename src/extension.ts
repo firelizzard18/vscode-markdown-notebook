@@ -13,7 +13,7 @@ const providerOptions = {
 		editable: true,
 		custom: true,
 	},
-	transientOutputs: true
+	transientOutputs: false
 };
 
 export function activate(context: vscode.ExtensionContext) {
@@ -64,12 +64,12 @@ class MarkdownProvider implements vscode.NotebookContentProvider {
 	}
 
 	async saveNotebook(document: vscode.NotebookDocument, cancellation: vscode.CancellationToken): Promise<void> {
-		const stringOutput = writeCellsToMarkdown(document.cells);
+		const stringOutput = writeCellsToMarkdown(document.cells, document.metadata.custom?.frontmatter);
 		await vscode.workspace.fs.writeFile(document.uri, Buffer.from(stringOutput));
 	}
 
 	async saveNotebookAs(targetResource: vscode.Uri, document: vscode.NotebookDocument, cancellation: vscode.CancellationToken): Promise<void> {
-		const stringOutput = writeCellsToMarkdown(document.cells);
+		const stringOutput = writeCellsToMarkdown(document.cells, document.metadata.custom?.frontmatter);
 		await vscode.workspace.fs.writeFile(targetResource, Buffer.from(stringOutput));
 	}
 }
@@ -84,9 +84,47 @@ export function rawToNotebookCellData(data: RawNotebookCell): vscode.NotebookCel
 			indentation: data.indentation,
 			isEmbeddedYaml: data.isEmbeddedYaml,
 		} }),
-		outputs: [],
+		outputs: Array.from(convertOutputs()),
 		source: data.content
 	};
+
+	function * convertOutputs(): Generator<vscode.NotebookCellOutput> {
+		if (!data.outputs || !(data.outputs instanceof Array)) {
+			return;
+		}
+		
+		for (const output of data.outputs) {
+			if (typeof output !== 'object' || typeof output.id !== 'string') {
+				continue;
+			}
+
+			const items = Array.from(convertOutputItems(output));
+			if (typeof output.metadata === 'object') {
+				yield new vscode.NotebookCellOutput(items, output.id, output.metadata);
+			} else {
+				yield new vscode.NotebookCellOutput(items, output.id);
+			}
+		}
+	}
+
+	function * convertOutputItems(output: any): Generator<vscode.NotebookCellOutputItem> {
+		if (!output.outputs || !(output.outputs instanceof Array)) {
+			return;
+		}
+
+		const items: vscode.NotebookCellOutputItem[] = [];
+		for (const item of output.outputs) {
+			if (typeof item !== 'object' || typeof item.mime !== 'string') {
+				continue;
+			}
+
+			if (typeof item.metadata === 'object') {
+				yield new vscode.NotebookCellOutputItem(item.mime, item.value, item.metadata);
+			} else {
+				yield new vscode.NotebookCellOutputItem(item.mime, item.value);
+			}
+		}
+	}
 }
 
 function debounce<T>(handler: (e: T) => void, interval: number): (e: T) => void {

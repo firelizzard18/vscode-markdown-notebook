@@ -15,6 +15,7 @@ export interface RawNotebookCell {
 	kind: vscode.NotebookCellKind;
 	isEmbeddedYaml?: boolean;
 	yaml?: object | string | number | null | undefined;
+	outputs?: any;
 }
 
 const LANG_IDS = new Map([
@@ -65,7 +66,7 @@ export function parseMarkdown(content: string): RawNotebookCell[] {
 	for (; i < lines.length;) {
 		const leadingWhitespace = i === 0 ? parseWhitespaceLines(true) : '';
 		if (cells.length === 0 && lines[i] === '---') {
-			if (parseEmbeddedYAML(leadingWhitespace)) {
+			if (parseFrontmatter(leadingWhitespace)) {
 				continue;
 			}
 		}
@@ -113,10 +114,18 @@ export function parseMarkdown(content: string): RawNotebookCell[] {
 		const content = lines.slice(startSourceIdx, i - 1)
 			.map(line => line.replace(new RegExp('^' + codeBlockStart.indentation), ''))
 			.join('\n');
+
+		let outputs;
+		const yaml = lines[i] === '---' && parseEmbeddedYAML();
+		if (yaml) {
+			outputs = yaml.result;
+		}
+
 		const trailingWhitespace = parseWhitespaceLines(false);
 		cells.push({
 			language,
 			content,
+			outputs,
 			kind: vscode.NotebookCellKind.Code,
 			leadingWhitespace: leadingWhitespace,
 			trailingWhitespace: trailingWhitespace,
@@ -150,12 +159,12 @@ export function parseMarkdown(content: string): RawNotebookCell[] {
 		});
 	}
 
-	function parseEmbeddedYAML(leadingWhitespace: string): boolean {
+	function parseEmbeddedYAML(): { content: string, result: any } | undefined {
 		const startSourceIdx = ++i;
 		while (true) {
 			if (i >= lines.length) {
 				i = startSourceIdx - 1;
-				return false;
+				return;
 			}
 
 			const currLine = lines[i++];
@@ -165,23 +174,30 @@ export function parseMarkdown(content: string): RawNotebookCell[] {
 		}
 
 		const content = lines.slice(startSourceIdx, i-1).join('\n');
-		let result: object | string | number | null | undefined;
 		try {
-			result = yaml.load(content);
+			const result = yaml.load(content);
+			return { content, result };
 		} catch (_) {
 			i = startSourceIdx - 1;
+			return;
+		}
+	}
+
+	function parseFrontmatter(leadingWhitespace: string): boolean {
+		const yaml = parseEmbeddedYAML();
+		if (!yaml) {
 			return false;
 		}
-
+		
 		const trailingWhitespace = parseWhitespaceLines(false);
 		cells.push({
 			language: 'yaml',
-			content,
+			content: yaml.content,
 			kind: vscode.NotebookCellKind.Code,
 			leadingWhitespace: leadingWhitespace,
 			trailingWhitespace: trailingWhitespace,
 			isEmbeddedYaml: true,
-			yaml: result,
+			yaml: yaml.result,
 		});
 		return true;
 	}
@@ -189,7 +205,9 @@ export function parseMarkdown(content: string): RawNotebookCell[] {
 	return cells;
 }
 
-export function writeCellsToMarkdown(cells: ReadonlyArray<vscode.NotebookCell>): string {
+export function writeCellsToMarkdown(cells: ReadonlyArray<vscode.NotebookCell>, frontmatter: any): string {
+	const saveOutputs = frontmatter instanceof Object && frontmatter.notebook instanceof Object && frontmatter.notebook.saveOutputs;
+
 	let result = '';
 	for (let i = 0; i < cells.length; i++) {
 		const cell = cells[i];
@@ -211,6 +229,10 @@ export function writeCellsToMarkdown(cells: ReadonlyArray<vscode.NotebookCell>):
 			const codeSuffix = '\n' + indentation + '```';
 
 			result += codePrefix + contents + codeSuffix;
+
+			if (saveOutputs && cell.outputs.length) {
+				result += '\n---\n' + yaml.dump(cell.outputs) + '---';
+			}
 		}
 
 		result += getBetweenCellsWhitespace(cells, i);
